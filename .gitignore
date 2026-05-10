@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Secrets / credentials
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# Model weights & large binaries
+outputs/
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.ckpt
+
+# Fine-tune data (generated, not source-controlled)
+finetune_data/train.jsonl
+finetune_data/val.jsonl
+
+# Node / frontend
+frontend/node_modules/
+frontend/build/
+frontend/.env
+frontend/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Modal
+.modal/
