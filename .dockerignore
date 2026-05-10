@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets (never bake into image)
+.env
+.env.local
+.env.*.local
+
+# Model weights (mounted at runtime or pulled from HF Hub)
+outputs/
+
+# Fine-tune data
+finetune_data/
+
+# Frontend build artefacts (built inside the frontend container)
+frontend/node_modules/
+frontend/build/
+
+# Git
+.git/
+.gitignore
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs / tooling
+*.md
+CLAUDE.md
