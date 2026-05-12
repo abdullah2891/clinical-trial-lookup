@@ -41,7 +41,7 @@ from data_sources.clinical_trials_gov import Trial
 logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = "text-embedding-3-large"
-EMBED_DIM = 1536
+EMBED_DIM = 1536  # ivfflat max is 2000; use OpenAI's Matryoshka truncation
 BATCH_SIZE = 32
 
 
@@ -64,6 +64,8 @@ class TrialEmbedder:
 
     async def embed_trials(self, trials: list[Trial]) -> None:
         conn = await asyncpg.connect(self._db_url)
+        # Extension must exist before register_vector queries its type OID
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         await register_vector(conn)
         await self._ensure_schema(conn)
 
@@ -107,17 +109,22 @@ class TrialEmbedder:
         await conn.close()
 
     async def _embed_batch(self, texts: list[str]) -> list[np.ndarray]:
-        resp = await self._openai.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+        resp = await self._openai.embeddings.create(
+            model=EMBEDDING_MODEL, input=texts, dimensions=EMBED_DIM
+        )
         return [np.array(item.embedding, dtype=np.float32) for item in resp.data]
 
     async def search_similar(
         self, query: str, top_k: int = 20
     ) -> list[dict]:
         """ANN search: embed query → cosine nearest neighbours from pgvector."""
-        resp = await self._openai.embeddings.create(model=EMBEDDING_MODEL, input=[query])
+        resp = await self._openai.embeddings.create(
+            model=EMBEDDING_MODEL, input=[query], dimensions=EMBED_DIM
+        )
         query_vec = np.array(resp.data[0].embedding, dtype=np.float32)
 
         conn = await asyncpg.connect(self._db_url)
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         await register_vector(conn)
 
         rows = await conn.fetch(
@@ -137,7 +144,6 @@ class TrialEmbedder:
 
     @staticmethod
     async def _ensure_schema(conn: asyncpg.Connection) -> None:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         await conn.execute(f"""
             CREATE TABLE IF NOT EXISTS trial_embeddings (
                 nct_id TEXT PRIMARY KEY,

@@ -53,6 +53,9 @@ class NCITrials:
         }
         try:
             resp = self._session.get(BASE_URL, params=params, timeout=DEFAULT_TIMEOUT)
+            if resp.status_code == 401:
+                logger.debug("NCI Trials API requires auth — skipping (no API key configured)")
+                return []
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
