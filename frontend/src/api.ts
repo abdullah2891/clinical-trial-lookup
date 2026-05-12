@@ -1,6 +1,6 @@
 import { SearchRequest, SearchResponse } from "./types";
 
-const API_BASE = process.env.REACT_APP_API_URL || "";
+const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 export async function searchTrials(request: SearchRequest): Promise<SearchResponse> {
   const resp = await fetch(`${API_BASE}/search`, {

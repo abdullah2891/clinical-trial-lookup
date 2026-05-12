@@ -4,13 +4,15 @@ FROM node:20-slim AS builder
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install --frozen-lockfile 2>/dev/null || npm install
+RUN npm install
 
-COPY public/ ./public/
-COPY src/     ./src/
+COPY index.html       ./
+COPY vite.config.ts   ./
+COPY tsconfig.json    ./
+COPY tsconfig.node.json ./
 COPY tailwind.config.js ./
+COPY src/             ./src/
 
-# REACT_APP_API_URL left empty so the nginx proxy handles /search → api:8000
 RUN npm run build
 
 # ── Stage 2: serve with nginx ─────────────────────────────────────────────────

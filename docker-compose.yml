@@ -16,7 +16,7 @@ services:
       timeout: 5s
       retries: 5
     ports:
-      - "5432:5432"   # expose for local psql / DBeaver access
+      - "5433:5432"   # host 5433 → container 5432 (avoids clash with local Postgres)
 
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
@@ -50,7 +50,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "8001:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
