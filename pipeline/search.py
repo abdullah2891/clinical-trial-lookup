@@ -16,7 +16,6 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
@@ -37,17 +36,14 @@ class SearchPipeline:
         self._embedder = TrialEmbedder()
         self._screener = EligibilityScreener()
 
-    def run(
+    async def run(
         self,
         symptoms: str,
         max_results: int = 5,
         status_filter: str = "RECRUITING",
     ) -> dict:
-        """
-        Synchronous entry point (wraps async retrieval).
-        Returns: {normalized_condition, candidates_retrieved, results: [ScreeningResult]}
-        """
-        return asyncio.run(self._run_async(symptoms, max_results, status_filter))
+        """Returns: {normalized_condition, candidates_retrieved, results: [ScreeningResult]}"""
+        return await self._run_async(symptoms, max_results, status_filter)
 
     async def _run_async(
         self,

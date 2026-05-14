@@ -1,10 +1,10 @@
 """
-Modal serverless GPU deployment for BioMistral-7B + QLoRA adapter.
+Modal serverless GPU deployment for BioMistral-7B (base model, no adapter).
 
 Deploy: modal deploy serving/modal_endpoint.py
-Endpoint: https://<username>--biomistral-screener.modal.run/screen
+Endpoint: https://<username>--biomistral-screener.modal.run/screen_http
 
-Cold start: ~90s (model load + adapter merge)
+Cold start: ~60s (4-bit model load)
 Warm inference: ~2-4s per screening call
 Scale-to-zero: 5 min idle window
 """
@@ -12,7 +12,6 @@ Scale-to-zero: 5 min idle window
 from __future__ import annotations
 
 import json
-import os
 import re
 
 import modal
@@ -23,50 +22,41 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
         "transformers>=4.41.0",
-        "peft>=0.11.0",
         "bitsandbytes>=0.43.1",
         "accelerate>=0.30.0",
         "torch>=2.3.0",
         "sentencepiece>=0.2.0",
         "huggingface-hub>=0.23.0",
+        "fastapi[standard]>=0.111.0",
     )
 )
 
-PROMPT_TEMPLATE = """You are a clinical trial eligibility screener. Given a patient profile and trial eligibility criteria, determine if the patient is eligible.
+PROMPT_TEMPLATE = """<s>[INST] You are a clinical trial eligibility screener. Analyze the patient profile against the trial eligibility criteria and output ONLY a JSON object — no other text.
 
-Patient Profile:
-{patient}
+### Example
+Patient: 45yo female, breast cancer stage II, ECOG 1, no prior chemo.
+Criteria: Inclusion: age 18-70, breast cancer, ECOG 0-2. Exclusion: prior anthracycline.
+Output: {{"eligible": true, "confidence": 0.88, "reason": "Patient meets age, diagnosis, and performance criteria with no exclusion factors.", "key_criteria_met": ["age 45", "breast cancer", "ECOG 1"], "key_criteria_failed": []}}
 
-Trial Eligibility Criteria:
-{criteria}
+### Task
+Patient: {patient}
+Criteria: {criteria}
+Output: [/INST]"""
 
-Respond with a JSON object with these exact keys:
-- "eligible": boolean (true/false)
-- "confidence": float between 0.0 and 1.0
-- "reason": string (one sentence explanation)
-- "key_criteria_met": list of strings
-- "key_criteria_failed": list of strings
 
-JSON response:"""
+BASE_MODEL = "BioMistral/BioMistral-7B"
 
 
 @app.cls(
     gpu="A10G",
     image=image,
     scaledown_window=300,
-    secrets=[modal.Secret.from_name("huggingface-secret")],
 )
 class BioMistralScreener:
     @modal.enter()
     def load_model(self) -> None:
         import torch
-        from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-        base_model_id = os.environ.get("BASE_MODEL", "BioMistral/BioMistral-7B")
-        adapter_repo = os.environ.get(
-            "LORA_ADAPTER_PATH", "yourusername/clinical-trial-eligibility-screener"
-        )
 
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -75,16 +65,15 @@ class BioMistralScreener:
             bnb_4bit_use_double_quant=True,
         )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+        self.tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_id,
+        self.model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL,
             quantization_config=bnb_config,
             device_map="auto",
             torch_dtype=torch.float16,
         )
-        self.model = PeftModel.from_pretrained(model, adapter_repo)
         self.model.eval()
 
     @modal.method()
@@ -110,7 +99,7 @@ class BioMistralScreener:
         )
         return _extract_json(generated)
 
-    @modal.web_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST")
     def screen_http(self, body: dict) -> dict:
         """HTTP entry point. Accepts {patient, criteria}, returns eligibility dict."""
         patient = body.get("patient", "")
@@ -121,16 +110,29 @@ class BioMistralScreener:
 
 
 def _extract_json(text: str) -> dict:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    # Strip markdown code fences
+    text = re.sub(r"```(?:json)?", "", text).strip()
+    # Find the outermost {...}
+    match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
+            data = json.loads(match.group())
+            return {
+                "eligible": bool(data.get("eligible", False)),
+                "confidence": float(data.get("confidence", 0.0)),
+                "reason": str(data.get("reason", "")),
+                "key_criteria_met": list(data.get("key_criteria_met", [])),
+                "key_criteria_failed": list(data.get("key_criteria_failed", [])),
+            }
+        except (json.JSONDecodeError, ValueError):
             pass
+    # Heuristic fallback: look for eligible keyword in generated text
+    lower = text.lower()
+    eligible = "eligible" in lower and "not eligible" not in lower and "ineligible" not in lower
     return {
-        "eligible": False,
-        "confidence": 0.0,
-        "reason": text[:200],
+        "eligible": eligible,
+        "confidence": 0.5 if eligible else 0.4,
+        "reason": text[:300].strip() or "Unable to parse model output.",
         "key_criteria_met": [],
         "key_criteria_failed": [],
     }

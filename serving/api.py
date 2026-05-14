@@ -104,7 +104,7 @@ async def search(request: SearchRequest) -> SearchResponse:
 
     start = time.monotonic()
     try:
-        pipeline_result = _pipeline.run(
+        pipeline_result = await _pipeline.run(
             symptoms=request.symptoms,
             max_results=request.max_results,
             status_filter=request.status_filter,

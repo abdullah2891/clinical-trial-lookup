@@ -55,16 +55,29 @@ class ScreeningResult:
     latency_ms: float = 0.0
 
 
+GPT_SCREENING_PROMPT = """You are a clinical trial eligibility screener.
+
+Patient Profile:
+{patient}
+
+Trial Eligibility Criteria:
+{criteria}
+
+Respond with ONLY a JSON object:
+{{"eligible": true/false, "confidence": 0.0-1.0, "reason": "one sentence", "key_criteria_met": [], "key_criteria_failed": []}}"""
+
+
 class EligibilityScreener:
     """
-    Routes screening requests to Modal endpoint (prod) or local model (dev).
+    Routes screening to Modal (BioMistral-7B) with GPT-4o-mini fallback.
     Set MODAL_ENDPOINT_URL to use the serverless GPU endpoint.
     """
 
     def __init__(self) -> None:
         self._endpoint_url = os.getenv("MODAL_ENDPOINT_URL", "")
+        self._openai_key = os.getenv("OPENAI_API_KEY", "")
         self._local_model: object | None = None
-        self._client = httpx.Client(timeout=60.0)
+        self._client = httpx.Client(timeout=15.0)
 
     def screen(
         self,
@@ -76,9 +89,16 @@ class EligibilityScreener:
         """Screen a patient against a trial's eligibility criteria."""
         start = time.monotonic()
 
+        raw: dict = {}
         if self._endpoint_url:
             raw = self._call_modal(patient_profile, eligibility_criteria)
-        else:
+
+        # Fall back when Modal returned no usable result (no reason or low-confidence heuristic)
+        modal_unusable = len(str(raw.get("reason", ""))) < 10 or float(raw.get("confidence", 0)) < 0.5
+        if modal_unusable and self._openai_key:
+            logger.debug("Modal result unusable — falling back to GPT-4o-mini")
+            raw = self._call_gpt(patient_profile, eligibility_criteria)
+        elif modal_unusable and not self._openai_key:
             raw = self._call_local(patient_profile, eligibility_criteria)
 
         latency_ms = (time.monotonic() - start) * 1000
@@ -121,6 +141,20 @@ class EligibilityScreener:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def _call_gpt(self, patient: str, criteria: str) -> dict:
+        """GPT-4o-mini fallback screener with JSON response format."""
+        from openai import OpenAI
+        client = OpenAI(api_key=self._openai_key)
+        prompt = GPT_SCREENING_PROMPT.format(patient=patient, criteria=criteria)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            max_tokens=300,
+            temperature=0.1,
+        )
+        return json.loads(resp.choices[0].message.content or "{}")
 
     def _call_local(self, patient: str, criteria: str) -> dict:
         """Load and run the local LoRA-augmented model (lazy init)."""

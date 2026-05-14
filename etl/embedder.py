@@ -106,6 +106,9 @@ class TrialEmbedder:
             )
             logger.info("Upserted batch %d-%d", batch_start, batch_start + len(batch))
 
+        await self.rebuild_index(conn)
+        total = await conn.fetchval("SELECT COUNT(*) FROM trial_embeddings")
+        logger.info("Index rebuilt. Total rows: %d", total)
         await conn.close()
 
     async def _embed_batch(self, texts: list[str]) -> list[np.ndarray]:
@@ -156,10 +159,19 @@ class TrialEmbedder:
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS trial_emb_idx
+
+    @staticmethod
+    async def rebuild_index(conn: asyncpg.Connection) -> None:
+        """Build ivfflat index after data is loaded. lists = max(rows/50, 1)."""
+        row_count = await conn.fetchval("SELECT COUNT(*) FROM trial_embeddings")
+        if row_count == 0:
+            return
+        lists = max(int(row_count / 50), 1)
+        await conn.execute("DROP INDEX IF EXISTS trial_emb_idx")
+        await conn.execute(f"""
+            CREATE INDEX trial_emb_idx
             ON trial_embeddings USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 100)
+            WITH (lists = {lists})
         """)
 
 
