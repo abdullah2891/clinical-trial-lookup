@@ -45,7 +45,7 @@ EMBED_DIM = 1536  # ivfflat max is 2000; use OpenAI's Matryoshka truncation
 BATCH_SIZE = 32
 
 
-def _trial_to_text(trial: Trial) -> str:
+def trial_to_text(trial: Trial) -> str:
     parts = [
         trial.title,
         "Conditions: " + ", ".join(trial.conditions),
@@ -69,7 +69,7 @@ class TrialEmbedder:
         await register_vector(conn)
         await self._ensure_schema(conn)
 
-        texts = [_trial_to_text(t) for t in trials]
+        texts = [trial_to_text(t) for t in trials]
 
         for batch_start in range(0, len(trials), BATCH_SIZE):
             batch = trials[batch_start : batch_start + BATCH_SIZE]
@@ -111,7 +111,7 @@ class TrialEmbedder:
         logger.info("Index rebuilt. Total rows: %d", total)
         await conn.close()
 
-    async def _embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+    async def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         resp = await self._openai.embeddings.create(
             model=EMBEDDING_MODEL, input=texts, dimensions=EMBED_DIM
         )
