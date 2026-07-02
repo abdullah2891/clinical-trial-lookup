@@ -34,11 +34,11 @@ RUN pip install --upgrade pip && \
         tenacity \
         numpy \
         tqdm \
-        huggingface-hub \
-        transformers \
-        peft \
-        sentencepiece \
-        accelerate
+        huggingface-hub
+        # NOTE: transformers/peft/accelerate deliberately excluded — they pull
+        # multi-GB CUDA torch wheels, and the API only uses them in the local-
+        # inference dev path (screener imports them lazily). Install manually
+        # if you need local model inference inside the container.
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
