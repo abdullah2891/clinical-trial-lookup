@@ -1,0 +1,50 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never run two deploys at once; queue instead of cancelling (a half-finished
+# docker build leaves the box in a weird state)
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Pull and rebuild on EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"${{ secrets.EC2_HOST }}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd /app
+          sudo git fetch origin main
+          sudo git reset --hard origin/main
+          sudo docker compose -f docker-compose.prod.yml up -d --build
+          sudo docker image prune -f
+          REMOTE
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf -m 5 "http://${{ secrets.EC2_HOST }}/health"; then
+              echo
+              echo "✅ deploy healthy"
+              exit 0
+            fi
+            echo "waiting for app... ($i/30)"
+            sleep 10
+          done
+          echo "❌ health check failed after 5 minutes"
+          exit 1
