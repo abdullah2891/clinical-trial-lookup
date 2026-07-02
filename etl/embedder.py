@@ -166,6 +166,8 @@ class TrialEmbedder:
         row_count = await conn.fetchval("SELECT COUNT(*) FROM trial_embeddings")
         if row_count == 0:
             return
+        # ivfflat k-means needs ~6 bytes/vector/list; give it 2 GB headroom
+        await conn.execute("SET maintenance_work_mem = '2GB'")
         lists = max(int(row_count / 50), 1)
         await conn.execute("DROP INDEX IF EXISTS trial_emb_idx")
         await conn.execute(f"""

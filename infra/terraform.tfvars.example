@@ -1,0 +1,18 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit it.
+
+aws_region    = "us-east-1"
+app_name      = "clinical-trials"
+instance_type = "t3.large"
+
+# Restrict SSH to your IP: curl https://checkip.amazonaws.com
+# Terraform generates the key pair automatically — no manual step needed.
+allowed_ssh_cidr = "0.0.0.0/0"
+
+# Your public GitHub repo
+github_repo   = "https://github.com/YOUR_USERNAME/clinical-trials-lookup.git"
+github_branch = "main"
+
+# Secrets — use strong values
+openai_api_key = "sk-..."
+db_password    = "ChangeMePlease123!"

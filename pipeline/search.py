@@ -81,16 +81,16 @@ class SearchPipeline:
         patient_profile = f"Patient symptoms: {symptoms}"
         screening_results = self._screener.screen_batch(patient_profile, trials_for_screening)
 
-        # Step 4: Rank by confidence (eligible first, then by score)
-        ranked = sorted(
-            screening_results,
-            key=lambda r: (not r.eligible, -r.confidence),
+        # Step 4: Return only eligible trials, ranked by confidence
+        eligible = sorted(
+            [r for r in screening_results if r.eligible],
+            key=lambda r: -r.confidence,
         )
 
         return {
             "normalized_condition": normalized,
             "candidates_retrieved": len(candidates),
-            "results": ranked[:max_results],
+            "results": eligible[:max_results],
         }
 
 

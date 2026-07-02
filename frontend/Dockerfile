@@ -10,7 +10,8 @@ COPY index.html       ./
 COPY vite.config.ts   ./
 COPY tsconfig.json    ./
 COPY tsconfig.node.json ./
-COPY tailwind.config.js ./
+COPY tailwind.config.cjs ./
+COPY postcss.config.js  ./
 COPY src/             ./src/
 
 RUN npm run build

@@ -108,29 +108,34 @@ class EligibilityScreener:
         self,
         patient_profile: str,
         trials: list[dict[str, str]],
+        max_workers: int = 8,
     ) -> list[ScreeningResult]:
-        """Screen a patient against multiple trials. trials: list of {nct_id, title, criteria}."""
-        results = []
-        for trial in trials:
+        """Screen a patient against multiple trials in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _screen_one(trial: dict) -> ScreeningResult:
             try:
-                result = self.screen(
+                return self.screen(
                     patient_profile,
                     trial.get("criteria", ""),
                     nct_id=trial.get("nct_id", ""),
                     title=trial.get("title", ""),
                 )
-                results.append(result)
             except Exception as exc:
                 logger.warning("Screening failed for %s: %s", trial.get("nct_id"), exc)
-                results.append(
-                    ScreeningResult(
-                        nct_id=trial.get("nct_id", ""),
-                        title=trial.get("title", ""),
-                        eligible=False,
-                        confidence=0.0,
-                        reason="Screening failed due to an internal error.",
-                    )
+                return ScreeningResult(
+                    nct_id=trial.get("nct_id", ""),
+                    title=trial.get("title", ""),
+                    eligible=False,
+                    confidence=0.0,
+                    reason="Screening failed due to an internal error.",
                 )
+
+        results: list[ScreeningResult] = [None] * len(trials)  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(trials))) as pool:
+            futures = {pool.submit(_screen_one, t): i for i, t in enumerate(trials)}
+            for fut in as_completed(futures):
+                results[futures[fut]] = fut.result()
         return results
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
@@ -222,7 +227,7 @@ class EligibilityScreener:
             eligible=bool(raw.get("eligible", False)),
             confidence=float(raw.get("confidence", 0.0)),
             reason=str(raw.get("reason", "")),
-            key_criteria_met=list(raw.get("key_criteria_met", [])),
-            key_criteria_failed=list(raw.get("key_criteria_failed", [])),
+            key_criteria_met=[str(c) for c in raw.get("key_criteria_met", [])],
+            key_criteria_failed=[str(c) for c in raw.get("key_criteria_failed", [])],
             latency_ms=latency_ms,
         )

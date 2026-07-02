@@ -1,6 +1,13 @@
+# Production compose — STANDALONE file, not an override.
+# Run with:  docker compose -f docker-compose.prod.yml up -d --build
+#
+# Differences from docker-compose.yml (dev):
+#   - only nginx (frontend) publishes a host port (80)
+#   - db/redis/api are internal-only
+#   - no dev source mounts — code is baked into the image at build time
+
 services:
 
-  # ── PostgreSQL + pgvector ────────────────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
@@ -16,10 +23,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    ports:
-      - "5433:5432"   # host 5433 → container 5432 (avoids clash with local Postgres)
 
-  # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -31,10 +35,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    ports:
-      - "6379:6379"
 
-  # ── FastAPI backend ───────────────────────────────────────────────────────────
   api:
     build:
       context: .
@@ -45,30 +46,19 @@ services:
     environment:
       DATABASE_URL:       postgresql://${POSTGRES_USER:-ctuser}:${POSTGRES_PASSWORD:-ctpass}@db:5432/${POSTGRES_DB:-clinical_trials}
       REDIS_URL:          redis://redis:6379
-      MODAL_ENDPOINT_URL: ""   # skip slow Modal cold-start; use GPT-4o-mini directly
+      MODAL_ENDPOINT_URL: ""   # GPT-4o-mini screening path (no Modal cold starts)
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8001:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       start_period: 20s
       retries: 3
-    volumes:
-      - ./outputs:/app/outputs:ro
-      # Live-mount source so edits apply on container restart (no image rebuild)
-      - ./models:/app/models:ro
-      - ./pipeline:/app/pipeline:ro
-      - ./serving:/app/serving:ro
-      - ./data_sources:/app/data_sources:ro
-      - ./etl:/app/etl:ro
 
-  # ── React frontend (nginx) ────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -79,9 +69,9 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "3000:80"
+      - "80:80"
 
-  # ── ETL worker (one-shot ingestion; run with: docker compose run --rm etl) ──
+  # One-shot ingestion:  docker compose -f docker-compose.prod.yml run --rm etl
   etl:
     build:
       context: .
@@ -96,7 +86,7 @@ services:
         condition: service_healthy
     command: ["python", "-m", "etl.pipeline"]
     profiles:
-      - tools   # only started when explicitly requested
+      - tools
 
 volumes:
   pgdata:

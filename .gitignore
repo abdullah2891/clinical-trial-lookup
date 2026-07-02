@@ -49,9 +49,10 @@ frontend/.env.local
 .DS_Store
 Thumbs.db
 
-# IDEs
+# IDEs / local tooling
 .idea/
 .vscode/
+.claude/settings.local.json
 *.swp
 *.swo
 
@@ -61,3 +62,10 @@ logs/
 
 # Modal
 .modal/
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/terraform.tfvars
