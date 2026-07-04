@@ -96,6 +96,17 @@ resource "aws_instance" "app" {
   iam_instance_profile   = aws_iam_instance_profile.ec2.name
   key_name               = aws_key_pair.app.key_name
 
+  # Spot pricing (~65% off on-demand). Persistent + stop-on-interrupt means an
+  # EBS-backed instance survives capacity reclaims (stops, restarts when
+  # capacity returns) and supports user/scheduler-initiated stop/start.
+  instance_market_options {
+    market_type = "spot"
+    spot_options {
+      spot_instance_type             = "persistent"
+      instance_interruption_behavior = "stop"
+    }
+  }
+
   root_block_device {
     volume_size           = var.root_volume_size_gb
     volume_type           = "gp3"

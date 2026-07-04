@@ -23,6 +23,18 @@ from dataclasses import dataclass, field
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+try:
+    from langsmith import traceable
+    from langsmith.wrappers import wrap_openai
+except ImportError:  # keep the screener usable without langsmith installed
+    def traceable(*d_args, **d_kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
+
+    def wrap_openai(client):
+        return client
+
 logger = logging.getLogger(__name__)
 
 PROMPT_TEMPLATE = """You are a clinical trial eligibility screener. Given a patient profile and trial eligibility criteria, determine if the patient is eligible.
@@ -79,6 +91,7 @@ class EligibilityScreener:
         self._local_model: object | None = None
         self._client = httpx.Client(timeout=15.0)
 
+    @traceable(name="screen_trial", run_type="chain")
     def screen(
         self,
         patient_profile: str,
@@ -150,7 +163,7 @@ class EligibilityScreener:
     def _call_gpt(self, patient: str, criteria: str) -> dict:
         """GPT-4o-mini fallback screener with JSON response format."""
         from openai import OpenAI
-        client = OpenAI(api_key=self._openai_key)
+        client = wrap_openai(OpenAI(api_key=self._openai_key))
         prompt = GPT_SCREENING_PROMPT.format(patient=patient, criteria=criteria)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",

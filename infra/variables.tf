@@ -41,6 +41,18 @@ variable "github_branch" {
   default     = "main"
 }
 
+variable "ec2_start_cron" {
+  description = "EventBridge cron (America/New_York) to start the instance"
+  type        = string
+  default     = "cron(0 8 ? * MON-FRI *)" # 8:00 AM ET weekdays
+}
+
+variable "ec2_stop_cron" {
+  description = "EventBridge cron (America/New_York) to stop the instance"
+  type        = string
+  default     = "cron(0 20 ? * MON-FRI *)" # 8:00 PM ET weekdays
+}
+
 variable "openai_api_key" {
   description = "OpenAI API key — stored in SSM SecureString, never in plaintext"
   type        = string

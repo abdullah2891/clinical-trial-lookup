@@ -1,13 +1,20 @@
 """
 LangSmith eval harness for the clinical trial eligibility screener.
 
-Runs the golden test set through the full pipeline, logs traces to LangSmith,
-and prints a summary with accuracy, confidence calibration, and latency stats.
+Runs the golden test set through the screener. With LANGCHAIN_API_KEY set,
+uploads the golden set as a LangSmith dataset (ground-truth labels as outputs,
+created once — idempotent) and records each run as a LangSmith experiment with
+per-example feedback scores. Without a key, runs fully offline.
+
+Either way, prints accuracy, confidence calibration, and latency stats.
+
+Dependencies: langsmith, models.screener (which needs OPENAI_API_KEY or a
+Modal endpoint).
 
 Usage:
-    python eval/harness.py                        # run golden set
-    python eval/harness.py --golden eval/golden_set.jsonl
-    python eval/harness.py --n-samples 20         # quick smoke test
+    python -m eval.harness                        # full golden set
+    python -m eval.harness --n-samples 3          # quick smoke test
+    python -m eval.harness --golden eval/golden_set.jsonl
 """
 
 from __future__ import annotations
@@ -17,7 +24,6 @@ import json
 import logging
 import os
 import statistics
-import time
 from pathlib import Path
 
 from langsmith import Client as LangSmithClient
@@ -28,6 +34,7 @@ from models.screener import EligibilityScreener, ScreeningResult
 logger = logging.getLogger(__name__)
 
 GOLDEN_PATH = Path("eval/golden_set.jsonl")
+DATASET_NAME = "clinical-trial-golden-set"
 
 
 def load_golden_set(path: Path, n: int | None = None) -> list[dict]:
@@ -42,15 +49,6 @@ def load_golden_set(path: Path, n: int | None = None) -> list[dict]:
     return records
 
 
-def run_screener_on_example(example: dict, screener: EligibilityScreener) -> ScreeningResult:
-    return screener.screen(
-        patient_profile=example["patient"],
-        eligibility_criteria=example["criteria"],
-        nct_id=example.get("nct_id", ""),
-        title=example.get("title", ""),
-    )
-
-
 def compute_metrics(
     records: list[dict],
     predictions: list[ScreeningResult],
@@ -63,8 +61,7 @@ def compute_metrics(
 
     for record, pred in zip(records, predictions):
         gt_eligible = bool(record["label"]["eligible"])
-        pred_eligible = pred.eligible
-        is_correct = gt_eligible == pred_eligible
+        is_correct = gt_eligible == pred.eligible
 
         if is_correct:
             correct += 1
@@ -88,6 +85,24 @@ def compute_metrics(
     }
 
 
+# ── LangSmith evaluators (run once per example, scores shown in the UI) ────────
+
+def eligibility_correct(run, example) -> dict:
+    """1 if the predicted eligible/ineligible verdict matches ground truth."""
+    return {
+        "key": "eligibility_correct",
+        "score": int(run.outputs["eligible"] == example.outputs["eligible"]),
+    }
+
+
+def confidence_abs_error(run, example) -> dict:
+    """Absolute gap between predicted and reference confidence (lower = better)."""
+    return {
+        "key": "confidence_abs_error",
+        "score": abs(run.outputs["confidence"] - example.outputs["confidence"]),
+    }
+
+
 class EvalHarness:
     def __init__(self) -> None:
         self._screener = EligibilityScreener()
@@ -98,58 +113,90 @@ class EvalHarness:
         records = load_golden_set(golden_path, n=n_samples)
         logger.info("Running eval on %d examples", len(records))
 
-        predictions: list[ScreeningResult] = []
-        for i, record in enumerate(records):
-            try:
-                pred = run_screener_on_example(record, self._screener)
-                predictions.append(pred)
-            except Exception as exc:
-                logger.warning("Example %d failed: %s", i, exc)
-                predictions.append(
-                    ScreeningResult(
-                        nct_id=record.get("nct_id", ""),
-                        title=record.get("title", ""),
-                        eligible=False,
-                        confidence=0.0,
-                        reason=f"Error: {exc}",
-                    )
-                )
+        if self._ls_client:
+            return self._run_langsmith(records)
+        logger.info("LANGCHAIN_API_KEY not set — running offline")
+        return self._run_offline(records)
 
-        metrics = compute_metrics(records, predictions)
-        self._log_to_langsmith(records, predictions, metrics)
-        return metrics
+    # ── Offline path ───────────────────────────────────────────────────────────
 
-    def _log_to_langsmith(
-        self,
-        records: list[dict],
-        predictions: list[ScreeningResult],
-        metrics: dict,
-    ) -> None:
-        if not self._ls_client:
-            return
+    def _screen_record(self, record: dict) -> ScreeningResult:
         try:
-            dataset_name = "clinical-trial-golden-set"
-            # Upsert dataset
-            datasets = list(self._ls_client.list_datasets(dataset_name=dataset_name))
-            if datasets:
-                dataset = datasets[0]
-            else:
-                dataset = self._ls_client.create_dataset(dataset_name=dataset_name)
-
-            for record, pred in zip(records, predictions):
-                self._ls_client.create_example(
-                    inputs={"patient": record["patient"], "criteria": record["criteria"]},
-                    outputs={
-                        "eligible": pred.eligible,
-                        "confidence": pred.confidence,
-                        "reason": pred.reason,
-                    },
-                    dataset_id=dataset.id,
-                )
-
-            logger.info("Logged %d examples to LangSmith dataset: %s", len(records), dataset_name)
+            return self._screener.screen(
+                patient_profile=record["patient"],
+                eligibility_criteria=record["criteria"],
+                nct_id=record.get("nct_id", ""),
+                title=record.get("title", ""),
+            )
         except Exception as exc:
-            logger.warning("LangSmith logging failed: %s", exc)
+            logger.warning("Screening failed for %s: %s", record.get("nct_id"), exc)
+            return ScreeningResult(
+                nct_id=record.get("nct_id", ""),
+                title=record.get("title", ""),
+                eligible=False,
+                confidence=0.0,
+                reason=f"Error: {exc}",
+            )
+
+    def _run_offline(self, records: list[dict]) -> dict:
+        predictions = [self._screen_record(r) for r in records]
+        return compute_metrics(records, predictions)
+
+    # ── LangSmith path ─────────────────────────────────────────────────────────
+
+    def _ensure_dataset(self, records: list[dict]) -> None:
+        """Create the golden dataset once; never duplicate examples on re-runs."""
+        existing = list(self._ls_client.list_datasets(dataset_name=DATASET_NAME))
+        if existing:
+            return
+        dataset = self._ls_client.create_dataset(
+            dataset_name=DATASET_NAME,
+            description="Adversarial golden set for trial eligibility screening",
+        )
+        for record in records:
+            self._ls_client.create_example(
+                inputs={"patient": record["patient"], "criteria": record["criteria"]},
+                outputs=record["label"],  # ground truth, not predictions
+                metadata={"nct_id": record.get("nct_id", "")},
+                dataset_id=dataset.id,
+            )
+        logger.info("Created LangSmith dataset '%s' (%d examples)", DATASET_NAME, len(records))
+
+    def _run_langsmith(self, records: list[dict]) -> dict:
+        self._ensure_dataset(records)
+
+        # evaluate() may run examples in any order — key predictions by input
+        predictions: dict[str, ScreeningResult] = {}
+
+        def target(inputs: dict) -> dict:
+            result = self._screener.screen(
+                patient_profile=inputs["patient"],
+                eligibility_criteria=inputs["criteria"],
+            )
+            predictions[inputs["patient"]] = result
+            return {
+                "eligible": result.eligible,
+                "confidence": result.confidence,
+                "reason": result.reason,
+            }
+
+        experiment = ls_evaluate(
+            target,
+            data=DATASET_NAME,
+            evaluators=[eligibility_correct, confidence_abs_error],
+            experiment_prefix="eligibility-screener",
+            client=self._ls_client,
+        )
+
+        ordered = [
+            predictions.get(r["patient"])
+            or ScreeningResult(nct_id=r.get("nct_id", ""), title="", eligible=False,
+                               confidence=0.0, reason="missing prediction")
+            for r in records
+        ]
+        metrics = compute_metrics(records, ordered)
+        metrics["experiment"] = getattr(experiment, "experiment_name", "")
+        return metrics
 
 
 def main() -> None:
