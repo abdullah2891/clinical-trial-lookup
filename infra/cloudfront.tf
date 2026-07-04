@@ -43,6 +43,27 @@ resource "aws_cloudfront_distribution" "app" {
     compress               = false
   }
 
+  # ── /experiments* — GET list + POST run, never cache ────────────────────────
+  ordered_cache_behavior {
+    path_pattern     = "/experiments*"
+    target_origin_id = local.ec2_origin_id
+
+    allowed_methods = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods  = ["GET", "HEAD"]
+
+    forwarded_values {
+      query_string = true
+      headers      = ["*"]
+      cookies { forward = "all" }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 0
+    max_ttl                = 0
+    compress               = false
+  }
+
   # ── /health — no cache ──────────────────────────────────────────────────────
   ordered_cache_behavior {
     path_pattern     = "/health"

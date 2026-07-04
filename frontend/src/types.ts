@@ -23,3 +23,18 @@ export interface SearchRequest {
   max_results: number;
   status_filter: string;
 }
+
+export interface Experiment {
+  name: string;
+  start_time: string;
+  run_count: number | null;
+  accuracy: number | null;
+  confidence_abs_error: number | null;
+}
+
+export interface ExperimentsResponse {
+  langsmith_configured: boolean;
+  running: boolean;
+  last_error: string | null;
+  experiments: Experiment[];
+}

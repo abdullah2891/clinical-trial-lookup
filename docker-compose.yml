@@ -67,6 +67,7 @@ services:
       - ./serving:/app/serving:ro
       - ./data_sources:/app/data_sources:ro
       - ./etl:/app/etl:ro
+      - ./eval:/app/eval:ro
 
   # ── React frontend (nginx) ────────────────────────────────────────────────────
   frontend:

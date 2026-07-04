@@ -4,8 +4,12 @@ import { SearchResponse } from "./types";
 import SearchForm from "./components/SearchForm";
 import TrialCard from "./components/TrialCard";
 import ResultsMeta from "./components/ResultsMeta";
+import MonitoringPage from "./components/MonitoringPage";
+
+type Tab = "search" | "monitoring";
 
 export default function App() {
+  const [tab, setTab] = useState<Tab>("search");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<SearchResponse | null>(null);
@@ -31,11 +35,24 @@ export default function App() {
       {/* ── Hero / Header ────────────────────────────────────────────── */}
       <header className="bg-gradient-to-br from-brand-700 via-brand-600 to-brand-800 text-white">
         <div className="max-w-4xl mx-auto px-4 pt-10 pb-12">
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex items-center justify-between gap-2 mb-3">
             <span className="inline-flex items-center gap-1.5 bg-white/20 text-white text-xs font-semibold px-3 py-1 rounded-full backdrop-blur-sm">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-slow" />
               AI-Powered · 62,000+ Trials
             </span>
+            <nav className="flex gap-1 bg-white/10 rounded-full p-1 backdrop-blur-sm">
+              {(["search", "monitoring"] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-3.5 py-1 rounded-full text-xs font-semibold capitalize transition-colors ${
+                    tab === t ? "bg-white text-brand-700" : "text-white/80 hover:text-white"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </nav>
           </div>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
             Clinical Trial Search
@@ -48,14 +65,19 @@ export default function App() {
       </header>
 
       {/* ── Search form ──────────────────────────────────────────────── */}
-      <div className="bg-gradient-to-b from-brand-700 to-transparent">
-        <div className="max-w-4xl mx-auto px-4 -mt-4 pb-6">
-          <SearchForm onSearch={handleSearch} loading={loading} />
+      {tab === "search" && (
+        <div className="bg-gradient-to-b from-brand-700 to-transparent">
+          <div className="max-w-4xl mx-auto px-4 -mt-4 pb-6">
+            <SearchForm onSearch={handleSearch} loading={loading} />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Main content ─────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-4xl mx-auto w-full px-4 pb-16 space-y-4">
+      <main className={`flex-1 max-w-4xl mx-auto w-full px-4 pb-16 space-y-4 ${tab === "monitoring" ? "pt-8" : ""}`}>
+        {tab === "monitoring" && <MonitoringPage />}
+        {tab === "search" && (
+        <>
         {/* Error */}
         {error && (
           <div className="animate-fade-in flex items-start gap-3 rounded-xl bg-rose-50 border border-rose-200 p-4 text-sm text-rose-700">
@@ -132,6 +154,8 @@ export default function App() {
           <div className="text-center py-12">
             <p className="text-sm text-slate-400">Enter your symptoms above to find matching trials</p>
           </div>
+        )}
+        </>
         )}
       </main>
 
