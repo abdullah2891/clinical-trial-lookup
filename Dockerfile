@@ -30,6 +30,7 @@ RUN pip install --upgrade pip && \
         redis \
         openai \
         langsmith \
+        langgraph \
         python-dotenv \
         tenacity \
         numpy \

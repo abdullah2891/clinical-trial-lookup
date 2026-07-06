@@ -10,6 +10,7 @@ Run: uvicorn serving.api:app --host 0.0.0.0 --port 8000 --reload
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -20,6 +21,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from pipeline.search import SearchPipeline
@@ -162,6 +164,46 @@ async def search(request: SearchRequest) -> SearchResponse:
         response.model_dump(),
     )
     return response
+
+
+# ── Agentic RAG (LangGraph, streamed as SSE) ───────────────────────────────────
+
+class AgentSearchRequest(BaseModel):
+    question: str = Field(..., min_length=3, max_length=2000)
+
+
+_agent = None
+
+
+def _get_agent():
+    global _agent
+    if _agent is None:
+        from pipeline.agentic import AgenticRAG
+
+        _agent = AgenticRAG()
+    return _agent
+
+
+@app.post("/agent/search")
+async def agent_search(request: AgentSearchRequest) -> StreamingResponse:
+    agent = _get_agent()
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        try:
+            async for event in agent.stream(request.question):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:
+            logger.exception("Agent stream failed")
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Agent pipeline failed'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # tell nginx not to buffer the stream
+        },
+    )
 
 
 # ── Experiments (LangSmith eval monitoring) ────────────────────────────────────

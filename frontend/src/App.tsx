@@ -5,8 +5,9 @@ import SearchForm from "./components/SearchForm";
 import TrialCard from "./components/TrialCard";
 import ResultsMeta from "./components/ResultsMeta";
 import MonitoringPage from "./components/MonitoringPage";
+import AgentPage from "./components/AgentPage";
 
-type Tab = "search" | "monitoring";
+type Tab = "search" | "agent" | "monitoring";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("search");
@@ -41,7 +42,7 @@ export default function App() {
               AI-Powered · 62,000+ Trials
             </span>
             <nav className="flex gap-1 bg-white/10 rounded-full p-1 backdrop-blur-sm">
-              {(["search", "monitoring"] as Tab[]).map((t) => (
+              {(["search", "agent", "monitoring"] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -74,8 +75,9 @@ export default function App() {
       )}
 
       {/* ── Main content ─────────────────────────────────────────────── */}
-      <main className={`flex-1 max-w-4xl mx-auto w-full px-4 pb-16 space-y-4 ${tab === "monitoring" ? "pt-8" : ""}`}>
+      <main className={`flex-1 max-w-4xl mx-auto w-full px-4 pb-16 space-y-4 ${tab !== "search" ? "pt-8" : ""}`}>
         {tab === "monitoring" && <MonitoringPage />}
+        {tab === "agent" && <AgentPage />}
         {tab === "search" && (
         <>
         {/* Error */}
