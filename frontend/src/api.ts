@@ -28,11 +28,12 @@ export async function fetchExperiments(): Promise<ExperimentsResponse> {
 export async function streamAgentSearch(
   question: string,
   onEvent: (event: AgentEvent) => void,
+  clarifications = "",
 ): Promise<void> {
   const resp = await fetch(`${API_BASE}/agent/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, clarifications }),
   });
   if (!resp.ok || !resp.body) {
     throw new Error(`Agent search failed (${resp.status})`);

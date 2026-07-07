@@ -47,6 +47,7 @@ export interface RetrievalResult {
 }
 
 export type AgentEvent =
+  | { type: "clarification"; questions: string[] }
   | { type: "sub_questions"; sub_questions: string[] }
   | { type: "retrieval"; round: number; results: RetrievalResult[]; total_unique: number }
   | { type: "analysis"; iteration: number; decision: "refine" | "answer"; reasoning: string; new_queries: string[] }

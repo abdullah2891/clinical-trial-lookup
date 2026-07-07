@@ -110,30 +110,58 @@ export default function AgentPage() {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Clarifying questions the agent asked, and the user's typed answers
+  const [pendingQuestions, setPendingQuestions] = useState<string[] | null>(null);
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+
+  async function runStream(text: string, clarifications: string) {
+    setError(null);
+    setRunning(true);
+    setPendingQuestions(null);
+    let i = items.length;
+    try {
+      await streamAgentSearch(
+        text,
+        (event) => {
+          if (event.type === "error") {
+            setError(event.detail);
+            return;
+          }
+          if (event.type === "done") return;
+          if (event.type === "clarification") {
+            setPendingQuestions(event.questions);
+            setAnswers({});
+            return;
+          }
+          i += 1;
+          setItems((prev) => [...prev, { event, key: `${event.type}-${i}` }]);
+        },
+        clarifications,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Agent search failed");
+    } finally {
+      setRunning(false);
+    }
+  }
 
   async function handleAsk(q?: string) {
     const text = (q ?? question).trim();
     if (text.length < 3 || running) return;
     if (q) setQuestion(q);
     setItems([]);
-    setError(null);
-    setRunning(true);
-    let i = 0;
-    try {
-      await streamAgentSearch(text, (event) => {
-        if (event.type === "error") {
-          setError(event.detail);
-          return;
-        }
-        if (event.type === "done") return;
-        i += 1;
-        setItems((prev) => [...prev, { event, key: `${event.type}-${i}` }]);
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent search failed");
-    } finally {
-      setRunning(false);
-    }
+    await runStream(text, "");
+  }
+
+  async function handleSubmitClarifications() {
+    if (!pendingQuestions || running) return;
+    // Fold the Q/A pairs into a single clarifications string
+    const clarifications = pendingQuestions
+      .map((q, idx) => (answers[idx]?.trim() ? `${q} ${answers[idx].trim()}` : ""))
+      .filter(Boolean)
+      .join(" | ");
+    if (!clarifications) return;
+    await runStream(question.trim(), clarifications);
   }
 
   return (
@@ -210,6 +238,51 @@ export default function AgentPage() {
               return null;
           }
         })}
+        {/* Clarifying questions from the agent */}
+        {pendingQuestions && !running && (
+          <div className="rounded-2xl bg-white border-2 border-amber-200 shadow-card p-5 animate-fade-in">
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-sm font-semibold text-slate-800">
+                A few details will improve the match
+              </p>
+            </div>
+            <div className="space-y-3">
+              {pendingQuestions.map((q, idx) => (
+                <div key={idx}>
+                  <label className="block text-sm text-slate-600 mb-1">{q}</label>
+                  <input
+                    type="text"
+                    value={answers[idx] ?? ""}
+                    onChange={(e) => setAnswers((a) => ({ ...a, [idx]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleSubmitClarifications(); }}
+                    placeholder="Your answer…"
+                    className="w-full text-sm text-slate-800 placeholder-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:bg-white focus:border-transparent transition-all"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                onClick={handleSubmitClarifications}
+                disabled={!Object.values(answers).some((a) => a.trim())}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
+              >
+                Refine search
+              </button>
+              <button
+                onClick={() => runStream(question.trim(), "skip")}
+                className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
+              >
+                Search anyway
+              </button>
+            </div>
+          </div>
+        )}
+
         {running && (
           <div className="flex items-center gap-2 text-sm text-slate-400 px-1">
             <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse-slow" />

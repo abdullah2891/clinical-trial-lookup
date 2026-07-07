@@ -41,6 +41,26 @@ AGENT_MODEL = os.getenv("AGENT_MODEL", "gpt-4o-mini")
 MAX_ITERATIONS = 3
 TOP_K_PER_QUERY = 8
 MAX_TRIALS_FOR_ANALYSIS = 24
+MAX_CLARIFYING_QUESTIONS = 3
+
+TRIAGE_PROMPT = """You are a clinical research assistant. Before searching a database of \
+clinical trials, decide whether the user's question is specific enough to find well-matched trials.
+
+A question is SPECIFIC enough if it names a condition plus at least one meaningful narrowing \
+detail (e.g. disease subtype/stage, patient age, prior treatments, biomarkers, or a clear \
+research angle).
+
+A question is AMBIGUOUS if it is so broad that retrieval would return scattered, poorly-matched \
+trials (e.g. "trials for cancer", "help me find a study", "diabetes trials").
+
+If ambiguous, ask 1-3 short, high-value clarifying questions that would most improve trial \
+matching (condition specifics, stage, age, prior treatment, key eligibility factors). Do NOT ask \
+more than needed; prefer the single most useful question.
+
+User question: {question}
+
+Respond with ONLY a JSON object:
+{{"specific_enough": true or false, "clarifying_questions": ["...", "..."]}}"""
 
 DECOMPOSE_PROMPT = """You are a clinical research assistant. Split the user's question about \
 clinical trials into 2-4 focused sub-questions suitable for semantic search over a database \
@@ -90,6 +110,12 @@ def _merge_trials(existing: dict, new: dict) -> dict:
 
 class AgentState(TypedDict):
     question: str
+    clarifications: str
+    effective_question: str
+    allow_clarification: bool
+    route: str
+    needs_clarification: bool
+    clarifying_questions: list[str]
     sub_questions: list[str]
     pending_queries: list[str]
     all_queries: list[str]
@@ -100,6 +126,19 @@ class AgentState(TypedDict):
     reasoning: str
     answer: str
     relevant_nct_ids: list[str]
+
+
+# Sentinel from the UI's "Search anyway" button: proceed past triage without
+# adding anything to the query.
+SKIP_CLARIFICATION = "skip"
+
+
+def _compose_question(question: str, clarifications: str) -> str:
+    """Fold the user's clarifying answers into the effective search question."""
+    clar = (clarifications or "").strip()
+    if not clar or clar.lower() == SKIP_CLARIFICATION:
+        return question
+    return f"{question}\n\nAdditional patient details: {clar}"
 
 
 def _summarize_trials(trials: dict, limit: int = MAX_TRIALS_FOR_ANALYSIS) -> str:
@@ -139,9 +178,28 @@ class AgenticRAG:
 
     # ── Graph nodes ─────────────────────────────────────────────────────────────
 
+    async def _triage(self, state: AgentState) -> dict:
+        """Entry gate: ask clarifying questions when the query is too broad."""
+        effective = _compose_question(state["question"], state["clarifications"])
+
+        # Skip clarification if disabled (evals), or already answered by the user.
+        if not state["allow_clarification"] or state["clarifications"].strip():
+            return {"route": "proceed", "effective_question": effective}
+
+        raw = await self._llm_json(TRIAGE_PROMPT.format(question=state["question"]))
+        questions = [str(q) for q in raw.get("clarifying_questions", [])][:MAX_CLARIFYING_QUESTIONS]
+        if raw.get("specific_enough", True) or not questions:
+            return {"route": "proceed", "effective_question": effective}
+        return {
+            "route": "clarify",
+            "needs_clarification": True,
+            "clarifying_questions": questions,
+            "effective_question": effective,
+        }
+
     async def _decompose(self, state: AgentState) -> dict:
-        raw = await self._llm_json(DECOMPOSE_PROMPT.format(question=state["question"]))
-        subs = [str(q) for q in raw.get("sub_questions", [])][:4] or [state["question"]]
+        raw = await self._llm_json(DECOMPOSE_PROMPT.format(question=state["effective_question"]))
+        subs = [str(q) for q in raw.get("sub_questions", [])][:4] or [state["effective_question"]]
         return {"sub_questions": subs, "pending_queries": subs, "all_queries": subs}
 
     async def _retrieve(self, state: AgentState) -> dict:
@@ -169,7 +227,7 @@ class AgenticRAG:
     async def _analyze(self, state: AgentState) -> dict:
         iteration = state["iteration"] + 1
         raw = await self._llm_json(ANALYZE_PROMPT.format(
-            question=state["question"],
+            question=state["effective_question"],
             iteration=iteration,
             max_iterations=MAX_ITERATIONS,
             trial_summaries=_summarize_trials(state["trials"]),
@@ -193,7 +251,7 @@ class AgenticRAG:
 
     async def _answer(self, state: AgentState) -> dict:
         raw = await self._llm_json(ANSWER_PROMPT.format(
-            question=state["question"],
+            question=state["effective_question"],
             trial_summaries=_summarize_trials(state["trials"]),
         ))
         return {
@@ -205,12 +263,18 @@ class AgenticRAG:
 
     def _build_graph(self):
         graph = StateGraph(AgentState)
+        graph.add_node("triage", self._triage)
         graph.add_node("decompose", self._decompose)
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("analyze", self._analyze)
         graph.add_node("answer", self._answer)
 
-        graph.set_entry_point("decompose")
+        graph.set_entry_point("triage")
+        graph.add_conditional_edges(
+            "triage",
+            lambda s: s["route"],
+            {"clarify": END, "proceed": "decompose"},
+        )
         graph.add_edge("decompose", "retrieve")
         graph.add_edge("retrieve", "analyze")
         graph.add_conditional_edges(
@@ -221,12 +285,16 @@ class AgenticRAG:
         graph.add_edge("answer", END)
         return graph.compile()
 
-    # ── Public non-streaming API (used by the eval harness) ────────────────────
-
-    async def run(self, question: str) -> dict:
-        """Run the full graph and return the final state summary."""
-        initial: AgentState = {
+    @staticmethod
+    def _initial_state(question: str, clarifications: str, allow_clarification: bool) -> "AgentState":
+        return {
             "question": question,
+            "clarifications": clarifications,
+            "effective_question": question,
+            "allow_clarification": allow_clarification,
+            "route": "",
+            "needs_clarification": False,
+            "clarifying_questions": [],
             "sub_questions": [],
             "pending_queries": [],
             "all_queries": [],
@@ -238,7 +306,15 @@ class AgenticRAG:
             "answer": "",
             "relevant_nct_ids": [],
         }
-        final = await self._graph.ainvoke(initial)
+
+    # ── Public non-streaming API (used by the eval harness) ────────────────────
+
+    async def run(self, question: str, clarifications: str = "") -> dict:
+        """Run the full graph and return the final state summary. Evals never
+        clarify (allow_clarification=False) so the agent always answers."""
+        final = await self._graph.ainvoke(
+            self._initial_state(question, clarifications, allow_clarification=False)
+        )
         return {
             "answer": final["answer"],
             "relevant_nct_ids": final["relevant_nct_ids"],
@@ -249,27 +325,17 @@ class AgenticRAG:
 
     # ── Public streaming API ────────────────────────────────────────────────────
 
-    async def stream(self, question: str) -> AsyncGenerator[dict, None]:
+    async def stream(self, question: str, clarifications: str = "") -> AsyncGenerator[dict, None]:
         """Yield UI-facing events as each graph node completes."""
-        initial: AgentState = {
-            "question": question,
-            "sub_questions": [],
-            "pending_queries": [],
-            "all_queries": [],
-            "trials": {},
-            "retrieval_log": [],
-            "iteration": 0,
-            "decision": "",
-            "reasoning": "",
-            "answer": "",
-            "relevant_nct_ids": [],
-        }
+        initial = self._initial_state(question, clarifications, allow_clarification=True)
         trials_seen: dict = {}
         round_no = 0
 
         async for update in self._graph.astream(initial, stream_mode="updates"):
             for node, out in update.items():
-                if node == "decompose":
+                if node == "triage" and out.get("needs_clarification"):
+                    yield {"type": "clarification", "questions": out["clarifying_questions"]}
+                elif node == "decompose":
                     yield {"type": "sub_questions", "sub_questions": out["sub_questions"]}
                 elif node == "retrieve":
                     round_no += 1

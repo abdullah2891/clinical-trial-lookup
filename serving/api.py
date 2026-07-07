@@ -178,6 +178,7 @@ async def search(request: SearchRequest) -> SearchResponse:
 
 class AgentSearchRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=2000)
+    clarifications: str = Field(default="", max_length=2000)
 
 
 _agent = None
@@ -195,7 +196,8 @@ def _get_agent():
 @app.post("/agent/search")
 async def agent_search(request: AgentSearchRequest) -> StreamingResponse:
     assert _guardrail is not None
-    verdict = await asyncio.to_thread(_guardrail.check, request.question)
+    combined = f"{request.question}\n{request.clarifications}".strip()
+    verdict = await asyncio.to_thread(_guardrail.check, combined)
     if verdict.blocked:
         logger.warning("Blocked /agent/search (%s, %s layer)", verdict.category, verdict.layer)
         raise HTTPException(status_code=400, detail="This request was blocked by the safety guardrail.")
@@ -204,7 +206,7 @@ async def agent_search(request: AgentSearchRequest) -> StreamingResponse:
 
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
-            async for event in agent.stream(request.question):
+            async for event in agent.stream(request.question, request.clarifications):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:
             logger.exception("Agent stream failed")
