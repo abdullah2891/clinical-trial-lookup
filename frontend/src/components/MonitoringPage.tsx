@@ -75,7 +75,7 @@ export default function MonitoringPage() {
     };
   }, [data?.running, load]);
 
-  async function handleRun(suite: "screener" | "agent") {
+  async function handleRun(suite: "screener" | "agent" | "guardrail") {
     setStarting(true);
     setError(null);
     try {
@@ -100,13 +100,13 @@ export default function MonitoringPage() {
             Golden-set evaluations of the eligibility screener, logged to LangSmith
           </p>
         </div>
-        <div className="flex gap-2">
-          {(["screener", "agent"] as const).map((suite) => (
+        <div className="flex flex-wrap gap-2">
+          {(["screener", "agent", "guardrail"] as const).map((suite) => (
             <button
               key={suite}
               onClick={() => handleRun(suite)}
               disabled={running || starting || data?.langsmith_configured === false}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
+              className="inline-flex items-center gap-2 px-3.5 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
             >
               {running || starting ? (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -171,7 +171,9 @@ export default function MonitoringPage() {
                   <td className="px-4 py-3 font-mono text-xs text-slate-700">{exp.name}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
-                      exp.dataset === "agent" ? "bg-violet-100 text-violet-700" : "bg-sky-100 text-sky-700"
+                      exp.dataset === "agent" ? "bg-violet-100 text-violet-700" :
+                      exp.dataset === "guardrail" ? "bg-rose-100 text-rose-700" :
+                      "bg-sky-100 text-sky-700"
                     }`}>
                       {exp.dataset}
                     </span>

@@ -62,7 +62,9 @@ export async function streamAgentSearch(
   }
 }
 
-export async function runExperiment(suite: "screener" | "agent" = "screener"): Promise<void> {
+export type EvalSuite = "screener" | "agent" | "guardrail";
+
+export async function runExperiment(suite: EvalSuite = "screener"): Promise<void> {
   const resp = await fetch(`${API_BASE}/experiments/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

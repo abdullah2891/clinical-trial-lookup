@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from pipeline.search import SearchPipeline
 from serving.cache import ResponseCache
+from serving.guardrail import Guardrail
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +84,16 @@ class ExperimentsResponse(BaseModel):
 
 _pipeline: SearchPipeline | None = None
 _cache: ResponseCache | None = None
+_guardrail: Guardrail | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    global _pipeline, _cache
+    global _pipeline, _cache, _guardrail
     _pipeline = SearchPipeline()
     _cache = ResponseCache()
-    logger.info("SearchPipeline and ResponseCache initialized")
+    _guardrail = Guardrail()
+    logger.info("SearchPipeline, ResponseCache, and Guardrail initialized")
     yield
     logger.info("Shutting down")
 
@@ -114,7 +117,12 @@ app.add_middleware(
 
 @app.post("/search", response_model=SearchResponse)
 async def search(request: SearchRequest) -> SearchResponse:
-    assert _pipeline is not None and _cache is not None
+    assert _pipeline is not None and _cache is not None and _guardrail is not None
+
+    verdict = await asyncio.to_thread(_guardrail.check, request.symptoms)
+    if verdict.blocked:
+        logger.warning("Blocked /search (%s, %s layer)", verdict.category, verdict.layer)
+        raise HTTPException(status_code=400, detail="This request was blocked by the safety guardrail.")
 
     cached = _cache.get(request.symptoms, request.status_filter, request.max_results)
     if cached:
@@ -186,6 +194,12 @@ def _get_agent():
 
 @app.post("/agent/search")
 async def agent_search(request: AgentSearchRequest) -> StreamingResponse:
+    assert _guardrail is not None
+    verdict = await asyncio.to_thread(_guardrail.check, request.question)
+    if verdict.blocked:
+        logger.warning("Blocked /agent/search (%s, %s layer)", verdict.category, verdict.layer)
+        raise HTTPException(status_code=400, detail="This request was blocked by the safety guardrail.")
+
     agent = _get_agent()
 
     async def event_stream() -> AsyncGenerator[str, None]:
@@ -222,7 +236,7 @@ def _eval_redis():
 
 
 class RunExperimentRequest(BaseModel):
-    suite: str = Field(default="screener", pattern="^(screener|agent)$")
+    suite: str = Field(default="screener", pattern="^(screener|agent|guardrail)$")
 
 
 def _run_eval(suite: str) -> None:
@@ -232,6 +246,10 @@ def _run_eval(suite: str) -> None:
             from eval.agent_harness import AgentEvalHarness
 
             metrics = AgentEvalHarness().run()
+        elif suite == "guardrail":
+            from eval.guardrail_harness import GuardrailEvalHarness
+
+            metrics = GuardrailEvalHarness().run()
         else:
             from eval.harness import EvalHarness
 
@@ -273,11 +291,16 @@ async def list_experiments() -> ExperimentsResponse:
         from langsmith import Client
 
         from eval.agent_harness import DATASET_NAME as AGENT_DATASET
+        from eval.guardrail_harness import DATASET_NAME as GUARDRAIL_DATASET
         from eval.harness import DATASET_NAME as SCREENER_DATASET
 
         client = Client(api_key=key)
         out: list[ExperimentOut] = []
-        for dataset_name, label in [(SCREENER_DATASET, "screener"), (AGENT_DATASET, "agent")]:
+        for dataset_name, label in [
+            (SCREENER_DATASET, "screener"),
+            (AGENT_DATASET, "agent"),
+            (GUARDRAIL_DATASET, "guardrail"),
+        ]:
             datasets = list(client.list_datasets(dataset_name=dataset_name))
             if not datasets:
                 continue
