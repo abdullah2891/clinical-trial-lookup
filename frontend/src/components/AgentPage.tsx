@@ -118,7 +118,8 @@ export default function AgentPage() {
     setError(null);
     setRunning(true);
     setPendingQuestions(null);
-    let i = items.length;
+    setItems([]);
+    let i = 0;
     try {
       await streamAgentSearch(
         text,
@@ -149,7 +150,6 @@ export default function AgentPage() {
     const text = (q ?? question).trim();
     if (text.length < 3 || running) return;
     if (q) setQuestion(q);
-    setItems([]);
     await runStream(text, "");
   }
 
@@ -238,18 +238,21 @@ export default function AgentPage() {
               return null;
           }
         })}
-        {/* Clarifying questions from the agent */}
+        {/* Optional refinement — search already ran; these narrow the match */}
         {pendingQuestions && !running && (
-          <div className="rounded-2xl bg-white border-2 border-amber-200 shadow-card p-5 animate-fade-in">
-            <div className="flex items-center gap-2 mb-3">
+          <div className="rounded-2xl bg-white border border-amber-200 shadow-card p-5 animate-fade-in">
+            <div className="flex items-center gap-2 mb-1">
               <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p className="text-sm font-semibold text-slate-800">
-                A few details will improve the match
+                Want better matches? Add a few details (optional)
               </p>
             </div>
+            <p className="text-xs text-slate-500 mb-3">
+              Results above are based on your original question. Answer any of these to refine.
+            </p>
             <div className="space-y-3">
               {pendingQuestions.map((q, idx) => (
                 <div key={idx}>
@@ -265,19 +268,13 @@ export default function AgentPage() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 flex items-center gap-2">
+            <div className="mt-4">
               <button
                 onClick={handleSubmitClarifications}
                 disabled={!Object.values(answers).some((a) => a.trim())}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
               >
                 Refine search
-              </button>
-              <button
-                onClick={() => runStream(question.trim(), "skip")}
-                className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
-              >
-                Search anyway
               </button>
             </div>
           </div>

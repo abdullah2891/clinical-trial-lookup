@@ -179,23 +179,20 @@ class AgenticRAG:
     # ── Graph nodes ─────────────────────────────────────────────────────────────
 
     async def _triage(self, state: AgentState) -> dict:
-        """Entry gate: ask clarifying questions when the query is too broad."""
+        """Entry node: never blocks. For broad first-turn queries it also
+        surfaces optional refinement questions the UI shows alongside results."""
         effective = _compose_question(state["question"], state["clarifications"])
+        base = {"route": "proceed", "effective_question": effective}
 
-        # Skip clarification if disabled (evals), or already answered by the user.
+        # No refinement prompt when disabled (evals) or the user already answered.
         if not state["allow_clarification"] or state["clarifications"].strip():
-            return {"route": "proceed", "effective_question": effective}
+            return base
 
         raw = await self._llm_json(TRIAGE_PROMPT.format(question=state["question"]))
         questions = [str(q) for q in raw.get("clarifying_questions", [])][:MAX_CLARIFYING_QUESTIONS]
         if raw.get("specific_enough", True) or not questions:
-            return {"route": "proceed", "effective_question": effective}
-        return {
-            "route": "clarify",
-            "needs_clarification": True,
-            "clarifying_questions": questions,
-            "effective_question": effective,
-        }
+            return base
+        return {**base, "needs_clarification": True, "clarifying_questions": questions}
 
     async def _decompose(self, state: AgentState) -> dict:
         raw = await self._llm_json(DECOMPOSE_PROMPT.format(question=state["effective_question"]))
@@ -270,11 +267,7 @@ class AgenticRAG:
         graph.add_node("answer", self._answer)
 
         graph.set_entry_point("triage")
-        graph.add_conditional_edges(
-            "triage",
-            lambda s: s["route"],
-            {"clarify": END, "proceed": "decompose"},
-        )
+        graph.add_edge("triage", "decompose")  # never blocks — always searches
         graph.add_edge("decompose", "retrieve")
         graph.add_edge("retrieve", "analyze")
         graph.add_conditional_edges(
