@@ -26,10 +26,10 @@ export interface SearchRequest {
 
 export interface Experiment {
   name: string;
+  dataset: string;
   start_time: string;
   run_count: number | null;
-  accuracy: number | null;
-  confidence_abs_error: number | null;
+  scores: Record<string, number>;
 }
 
 export interface AgentTrial {

@@ -66,10 +66,10 @@ class HealthResponse(BaseModel):
 
 class ExperimentOut(BaseModel):
     name: str
+    dataset: str
     start_time: str
     run_count: int | None = None
-    accuracy: float | None = None
-    confidence_abs_error: float | None = None
+    scores: dict[str, float] = {}
 
 
 class ExperimentsResponse(BaseModel):
@@ -221,13 +221,22 @@ def _eval_redis():
     return redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 
-def _run_eval() -> None:
+class RunExperimentRequest(BaseModel):
+    suite: str = Field(default="screener", pattern="^(screener|agent)$")
+
+
+def _run_eval(suite: str) -> None:
     r = _eval_redis()
     try:
-        from eval.harness import EvalHarness
+        if suite == "agent":
+            from eval.agent_harness import AgentEvalHarness
 
-        metrics = EvalHarness().run()
-        logger.info("Eval experiment finished: %s", metrics)
+            metrics = AgentEvalHarness().run()
+        else:
+            from eval.harness import EvalHarness
+
+            metrics = EvalHarness().run()
+        logger.info("Eval experiment (%s) finished: %s", suite, metrics)
         r.delete(_EVAL_ERROR_KEY)
     except Exception as exc:
         logger.exception("Eval experiment failed")
@@ -243,14 +252,15 @@ def _run_eval() -> None:
 
 
 @app.post("/experiments/run", status_code=202)
-async def run_experiment() -> dict:
+async def run_experiment(request: RunExperimentRequest | None = None) -> dict:
     if not os.getenv("LANGCHAIN_API_KEY"):
         raise HTTPException(status_code=400, detail="LangSmith is not configured (LANGCHAIN_API_KEY missing)")
-    acquired = _eval_redis().set(_EVAL_LOCK_KEY, "1", nx=True, ex=_EVAL_LOCK_TTL_S)
+    suite = (request or RunExperimentRequest()).suite
+    acquired = _eval_redis().set(_EVAL_LOCK_KEY, suite, nx=True, ex=_EVAL_LOCK_TTL_S)
     if not acquired:
         raise HTTPException(status_code=409, detail="An experiment is already running")
-    threading.Thread(target=_run_eval, daemon=True).start()
-    return {"status": "started"}
+    threading.Thread(target=_run_eval, args=(suite,), daemon=True).start()
+    return {"status": "started", "suite": suite}
 
 
 @app.get("/experiments", response_model=ExperimentsResponse)
@@ -262,29 +272,36 @@ async def list_experiments() -> ExperimentsResponse:
     def _fetch() -> list[ExperimentOut]:
         from langsmith import Client
 
-        from eval.harness import DATASET_NAME
+        from eval.agent_harness import DATASET_NAME as AGENT_DATASET
+        from eval.harness import DATASET_NAME as SCREENER_DATASET
 
         client = Client(api_key=key)
-        datasets = list(client.list_datasets(dataset_name=DATASET_NAME))
-        if not datasets:
-            return []
         out: list[ExperimentOut] = []
-        for project in client.list_projects(reference_dataset_id=datasets[0].id):
-            # list_projects omits stats — fetch each project with include_stats
-            try:
-                project = client.read_project(project_id=project.id, include_stats=True)
-            except Exception:
-                logger.warning("Could not read stats for experiment %s", project.name)
-            stats = getattr(project, "feedback_stats", None) or {}
-            out.append(
-                ExperimentOut(
-                    name=project.name,
-                    start_time=project.start_time.isoformat() if project.start_time else "",
-                    run_count=getattr(project, "run_count", None),
-                    accuracy=(stats.get("eligibility_correct") or {}).get("avg"),
-                    confidence_abs_error=(stats.get("confidence_abs_error") or {}).get("avg"),
+        for dataset_name, label in [(SCREENER_DATASET, "screener"), (AGENT_DATASET, "agent")]:
+            datasets = list(client.list_datasets(dataset_name=dataset_name))
+            if not datasets:
+                continue
+            for project in client.list_projects(reference_dataset_id=datasets[0].id):
+                # list_projects omits stats — fetch each project with include_stats
+                try:
+                    project = client.read_project(project_id=project.id, include_stats=True)
+                except Exception:
+                    logger.warning("Could not read stats for experiment %s", project.name)
+                stats = getattr(project, "feedback_stats", None) or {}
+                scores = {
+                    k: round(v["avg"], 3)
+                    for k, v in stats.items()
+                    if isinstance(v, dict) and v.get("avg") is not None
+                }
+                out.append(
+                    ExperimentOut(
+                        name=project.name,
+                        dataset=label,
+                        start_time=project.start_time.isoformat() if project.start_time else "",
+                        run_count=getattr(project, "run_count", None),
+                        scores=scores,
+                    )
                 )
-            )
         out.sort(key=lambda e: e.start_time, reverse=True)
         return out[:25]
 

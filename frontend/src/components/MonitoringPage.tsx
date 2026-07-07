@@ -4,9 +4,16 @@ import { Experiment, ExperimentsResponse } from "../types";
 
 const POLL_MS = 5000;
 
-function AccuracyBadge({ value }: { value: number | null }) {
-  if (value === null || value === undefined) {
-    return <span className="text-xs text-slate-400">—</span>;
+// Higher-is-better scores get traffic-light colors; error metrics stay neutral
+const ERROR_METRICS = new Set(["confidence_abs_error"]);
+
+function ScoreBadge({ metric, value }: { metric: string; value: number }) {
+  if (ERROR_METRICS.has(metric)) {
+    return (
+      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium tabular-nums bg-slate-100 text-slate-600">
+        {metric.replace(/_/g, " ")}: {value.toFixed(3)}
+      </span>
+    );
   }
   const pct = Math.round(value * 100);
   const cls =
@@ -15,7 +22,7 @@ function AccuracyBadge({ value }: { value: number | null }) {
     "bg-rose-100 text-rose-700";
   return (
     <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold tabular-nums ${cls}`}>
-      {pct}%
+      {metric.replace(/_/g, " ")}: {pct}%
     </span>
   );
 }
@@ -68,11 +75,11 @@ export default function MonitoringPage() {
     };
   }, [data?.running, load]);
 
-  async function handleRun() {
+  async function handleRun(suite: "screener" | "agent") {
     setStarting(true);
     setError(null);
     try {
-      await runExperiment();
+      await runExperiment(suite);
       setData((d) => (d ? { ...d, running: true } : d));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start experiment");
@@ -93,31 +100,31 @@ export default function MonitoringPage() {
             Golden-set evaluations of the eligibility screener, logged to LangSmith
           </p>
         </div>
-        <button
-          onClick={handleRun}
-          disabled={running || starting || data?.langsmith_configured === false}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
-        >
-          {running || starting ? (
-            <>
-              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Running…
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Run experiment
-            </>
-          )}
-        </button>
+        <div className="flex gap-2">
+          {(["screener", "agent"] as const).map((suite) => (
+            <button
+              key={suite}
+              onClick={() => handleRun(suite)}
+              disabled={running || starting || data?.langsmith_configured === false}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
+            >
+              {running || starting ? (
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              Run {suite} eval
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Running banner */}
@@ -152,23 +159,32 @@ export default function MonitoringPage() {
             <thead>
               <tr className="bg-slate-50 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 <th className="px-4 py-3">Experiment</th>
+                <th className="px-4 py-3">Suite</th>
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3 text-center">Examples</th>
-                <th className="px-4 py-3 text-center">Accuracy</th>
-                <th className="px-4 py-3 text-center">Conf. Error</th>
+                <th className="px-4 py-3">Scores</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {data.experiments.map((exp: Experiment) => (
                 <tr key={exp.name} className="hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-3 font-mono text-xs text-slate-700">{exp.name}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
+                      exp.dataset === "agent" ? "bg-violet-100 text-violet-700" : "bg-sky-100 text-sky-700"
+                    }`}>
+                      {exp.dataset}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(exp.start_time)}</td>
                   <td className="px-4 py-3 text-center text-xs text-slate-600 tabular-nums">{exp.run_count ?? "—"}</td>
-                  <td className="px-4 py-3 text-center"><AccuracyBadge value={exp.accuracy} /></td>
-                  <td className="px-4 py-3 text-center text-xs text-slate-600 tabular-nums">
-                    {exp.confidence_abs_error !== null && exp.confidence_abs_error !== undefined
-                      ? exp.confidence_abs_error.toFixed(3)
-                      : "—"}
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {Object.entries(exp.scores).map(([metric, value]) => (
+                        <ScoreBadge key={metric} metric={metric} value={value} />
+                      ))}
+                      {Object.keys(exp.scores).length === 0 && <span className="text-xs text-slate-400">—</span>}
+                    </div>
                   </td>
                 </tr>
               ))}

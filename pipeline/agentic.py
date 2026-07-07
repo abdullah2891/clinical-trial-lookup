@@ -221,6 +221,32 @@ class AgenticRAG:
         graph.add_edge("answer", END)
         return graph.compile()
 
+    # ── Public non-streaming API (used by the eval harness) ────────────────────
+
+    async def run(self, question: str) -> dict:
+        """Run the full graph and return the final state summary."""
+        initial: AgentState = {
+            "question": question,
+            "sub_questions": [],
+            "pending_queries": [],
+            "all_queries": [],
+            "trials": {},
+            "retrieval_log": [],
+            "iteration": 0,
+            "decision": "",
+            "reasoning": "",
+            "answer": "",
+            "relevant_nct_ids": [],
+        }
+        final = await self._graph.ainvoke(initial)
+        return {
+            "answer": final["answer"],
+            "relevant_nct_ids": final["relevant_nct_ids"],
+            "retrieved_nct_ids": sorted(final["trials"].keys()),
+            "sub_questions": final["sub_questions"],
+            "iterations": final["iteration"],
+        }
+
     # ── Public streaming API ────────────────────────────────────────────────────
 
     async def stream(self, question: str) -> AsyncGenerator[dict, None]:

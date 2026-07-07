@@ -62,8 +62,12 @@ export async function streamAgentSearch(
   }
 }
 
-export async function runExperiment(): Promise<void> {
-  const resp = await fetch(`${API_BASE}/experiments/run`, { method: "POST" });
+export async function runExperiment(suite: "screener" | "agent" = "screener"): Promise<void> {
+  const resp = await fetch(`${API_BASE}/experiments/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ suite }),
+  });
   if (!resp.ok) {
     const body = await resp.json().catch(() => null);
     throw new Error(body?.detail ?? `Failed to start experiment (${resp.status})`);
