@@ -19,7 +19,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -29,6 +29,23 @@ from serving.cache import ResponseCache
 from serving.guardrail import Guardrail
 
 logger = logging.getLogger(__name__)
+
+# ── Demo password gate ─────────────────────────────────────────────────────────
+# Single shared password for the whole app. Sent by the frontend as the
+# X-Demo-Password header on every gated request. /health stays open so Docker
+# and the deploy workflow can probe liveness without credentials.
+
+DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "snufflesdemo")
+
+
+async def require_password(x_demo_password: str = Header(default="")) -> None:
+    if x_demo_password != DEMO_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid or missing demo password.")
+
+
+class LoginRequest(BaseModel):
+    password: str = Field(..., max_length=200)
+
 
 # ── Request / Response models ──────────────────────────────────────────────────
 
@@ -115,7 +132,15 @@ app.add_middleware(
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@app.post("/search", response_model=SearchResponse)
+@app.post("/auth/login")
+async def login(request: LoginRequest) -> dict:
+    """Validate the demo password so the UI can gate before making real calls."""
+    if request.password != DEMO_PASSWORD:
+        raise HTTPException(status_code=401, detail="Incorrect password.")
+    return {"ok": True}
+
+
+@app.post("/search", response_model=SearchResponse, dependencies=[Depends(require_password)])
 async def search(request: SearchRequest) -> SearchResponse:
     assert _pipeline is not None and _cache is not None and _guardrail is not None
 
@@ -193,7 +218,7 @@ def _get_agent():
     return _agent
 
 
-@app.post("/agent/search")
+@app.post("/agent/search", dependencies=[Depends(require_password)])
 async def agent_search(request: AgentSearchRequest) -> StreamingResponse:
     assert _guardrail is not None
     combined = f"{request.question}\n{request.clarifications}".strip()
@@ -271,7 +296,7 @@ def _run_eval(suite: str) -> None:
             pass
 
 
-@app.post("/experiments/run", status_code=202)
+@app.post("/experiments/run", status_code=202, dependencies=[Depends(require_password)])
 async def run_experiment(request: RunExperimentRequest | None = None) -> dict:
     if not os.getenv("LANGCHAIN_API_KEY"):
         raise HTTPException(status_code=400, detail="LangSmith is not configured (LANGCHAIN_API_KEY missing)")
@@ -283,7 +308,7 @@ async def run_experiment(request: RunExperimentRequest | None = None) -> dict:
     return {"status": "started", "suite": suite}
 
 
-@app.get("/experiments", response_model=ExperimentsResponse)
+@app.get("/experiments", response_model=ExperimentsResponse, dependencies=[Depends(require_password)])
 async def list_experiments() -> ExperimentsResponse:
     key = os.getenv("LANGCHAIN_API_KEY", "")
     if not key:

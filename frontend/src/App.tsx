@@ -1,6 +1,7 @@
-import React, { useState } from "react";
-import { searchTrials } from "./api";
+import React, { useEffect, useState } from "react";
+import { searchTrials, getPassword, clearPassword, setAuthErrorHandler } from "./api";
 import { SearchResponse } from "./types";
+import LoginScreen from "./components/LoginScreen";
 import SearchForm from "./components/SearchForm";
 import TrialCard from "./components/TrialCard";
 import ResultsMeta from "./components/ResultsMeta";
@@ -10,8 +11,18 @@ import AgentPage from "./components/AgentPage";
 type Tab = "search" | "agent" | "monitoring";
 
 export default function App() {
+  const [authed, setAuthed] = useState<boolean>(() => Boolean(getPassword()));
   const [tab, setTab] = useState<Tab>("search");
   const [loading, setLoading] = useState(false);
+
+  // A 401 from any API call (wrong/expired password) drops back to login
+  useEffect(() => {
+    setAuthErrorHandler(() => setAuthed(false));
+  }, []);
+
+  if (!authed) {
+    return <LoginScreen onSuccess={() => setAuthed(true)} />;
+  }
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
