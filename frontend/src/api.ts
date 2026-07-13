@@ -1,4 +1,4 @@
-import { AgentEvent, ExperimentsResponse, SearchRequest, SearchResponse } from "./types";
+import { AgentEvent, ExperimentsResponse } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
@@ -31,22 +31,6 @@ export async function login(password: string): Promise<void> {
     throw new Error(resp.status === 401 ? "Incorrect password" : `Login failed (${resp.status})`);
   }
   setPassword(password);
-}
-
-export async function searchTrials(request: SearchRequest): Promise<SearchResponse> {
-  const resp = await fetch(`${API_BASE}/search`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify(request),
-  });
-
-  if (!resp.ok) {
-    check401(resp.status);
-    const text = await resp.text();
-    throw new Error(`Search failed (${resp.status}): ${text}`);
-  }
-
-  return resp.json() as Promise<SearchResponse>;
 }
 
 export async function fetchExperiments(): Promise<ExperimentsResponse> {

@@ -1,292 +1,346 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { streamAgentSearch } from "../api";
-import { AgentEvent, AgentTrial, RetrievalResult } from "../types";
+import { AgentEvent, AgentTrial } from "../types";
 
-const EXAMPLE_QUESTIONS = [
-  "Are there immunotherapy trials for stage III lung cancer that allow prior chemotherapy?",
-  "What trials exist for treatment-resistant depression that don't involve SSRIs?",
-  "Which Parkinson's trials accept patients already on levodopa?",
+// Conversational chat window over the LangGraph agentic RAG pipeline.
+//
+// Flow:
+//   • User types a message → agent streams progress ("narrowing it down…").
+//   • Agent replies with an answer bubble + cited trial cards.
+//   • If the question was broad, the agent also asks a short clarifying
+//     question. The user's next message is folded back in as clarifying
+//     detail and the same question is re-run for a tighter match.
+//   • At any point the user can just ask something new.
+
+const EXAMPLE_PROMPTS = [
+  "I have asthma and want to find a study",
+  "My dad has stage 3 lung cancer — any immunotherapy trials?",
+  "Give me companies with trials for Alzheimer's drugs",
+  "I'm on a GLP-1 for weight loss — what happens if I stop?",
 ];
 
-interface TimelineItem {
-  event: AgentEvent;
-  key: string;
+// ── Message model ────────────────────────────────────────────────────────────
+type Trial = AgentTrial;
+
+type ChatMessage =
+  | { id: string; role: "user"; text: string }
+  | { id: string; role: "agent"; kind: "answer"; text: string; trials: Trial[] }
+  | { id: string; role: "agent"; kind: "clarify"; text: string; questions: string[] }
+  | { id: string; role: "agent"; kind: "error"; text: string };
+
+let _uid = 0;
+const uid = () => `m${++_uid}`;
+
+// Human-friendly progress copy for each streamed graph event.
+function statusFor(event: AgentEvent): string | null {
+  switch (event.type) {
+    case "sub_questions":
+      return "Understanding your question…";
+    case "retrieval":
+      return event.round > 1
+        ? "Narrowing it down…"
+        : "Searching 62,000+ trials…";
+    case "analysis":
+      return event.decision === "refine"
+        ? "Narrowing it down further…"
+        : "Pulling the best matches together…";
+    default:
+      return null;
+  }
 }
 
-function SubQuestionsCard({ subs }: { subs: string[] }) {
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function TrialList({ trials }: { trials: Trial[] }) {
+  if (trials.length === 0) return null;
   return (
-    <div className="rounded-xl bg-white border border-slate-100 shadow-card p-4 animate-fade-in">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-        1 · Question decomposed
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {subs.map((q) => (
-          <span key={q} className="text-xs bg-brand-50 text-brand-700 border border-brand-100 px-2.5 py-1 rounded-full">
-            {q}
-          </span>
-        ))}
+    <div className="mt-3 space-y-2">
+      {trials.map((t) => (
+        <a
+          key={t.nct_id}
+          href={t.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block rounded-lg border border-slate-200 hover:border-brand-300 hover:bg-brand-50/50 px-3 py-2 transition-colors"
+        >
+          <span className="text-[11px] font-mono text-slate-400">{t.nct_id}</span>
+          <p className="text-sm text-slate-800 leading-snug">{t.title}</p>
+          {t.conditions.length > 0 && (
+            <p className="text-[11px] text-slate-400 mt-0.5">{t.conditions.join(" · ")}</p>
+          )}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function Bubble({ msg }: { msg: ChatMessage }) {
+  if (msg.role === "user") {
+    return (
+      <div className="flex justify-end animate-fade-in">
+        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-brand-600 text-white px-4 py-2.5 text-sm leading-relaxed shadow-sm shadow-brand-600/30 whitespace-pre-wrap">
+          {msg.text}
+        </div>
+      </div>
+    );
+  }
+
+  const isError = msg.kind === "error";
+  const isClarify = msg.kind === "clarify";
+  return (
+    <div className="flex justify-start gap-2 animate-fade-in">
+      <div className="w-7 h-7 shrink-0 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-bold mt-0.5">
+        AI
+      </div>
+      <div
+        className={`max-w-[85%] rounded-2xl rounded-bl-md px-4 py-3 text-sm leading-relaxed shadow-card ${
+          isError
+            ? "bg-rose-50 border border-rose-200 text-rose-700"
+            : isClarify
+            ? "bg-amber-50 border border-amber-200 text-slate-800"
+            : "bg-white border border-slate-100 text-slate-800"
+        }`}
+      >
+        <p className="whitespace-pre-wrap">{msg.text}</p>
+        {msg.kind === "clarify" && msg.questions.length > 0 && (
+          <ul className="mt-2 space-y-1">
+            {msg.questions.map((q, i) => (
+              <li key={i} className="flex items-start gap-1.5 text-slate-700">
+                <span className="text-amber-500 mt-0.5">•</span>
+                <span>{q}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {msg.kind === "answer" && <TrialList trials={msg.trials} />}
       </div>
     </div>
   );
 }
 
-function RetrievalCard({ round, results, total }: { round: number; results: RetrievalResult[]; total: number }) {
+function WorkingBubble({ status }: { status: string }) {
   return (
-    <div className="rounded-xl bg-white border border-slate-100 shadow-card p-4 animate-fade-in">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-        Retrieval round {round} · {total} unique trials so far
-      </p>
-      <ul className="space-y-1.5">
-        {results.map((r) => (
-          <li key={r.query} className="text-xs text-slate-600 flex items-start gap-2">
-            <svg className="w-3.5 h-3.5 mt-0.5 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <span>
-              <span className="text-slate-800">{r.query}</span>
-              <span className="text-slate-400"> — {r.count} trials</span>
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function AnalysisCard({ iteration, decision, reasoning, newQueries }: {
-  iteration: number; decision: string; reasoning: string; newQueries: string[];
-}) {
-  const refine = decision === "refine";
-  return (
-    <div className={`rounded-xl border shadow-card p-4 animate-fade-in ${
-      refine ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200"
-    }`}>
-      <p className="text-xs font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-2">
-        <span className={refine ? "text-amber-700" : "text-emerald-700"}>
-          Analysis {iteration} · {refine ? "needs refinement" : "ready to answer"}
+    <div className="flex justify-start gap-2 animate-fade-in">
+      <div className="w-7 h-7 shrink-0 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-bold mt-0.5">
+        AI
+      </div>
+      <div className="rounded-2xl rounded-bl-md bg-white border border-slate-100 shadow-card px-4 py-3 flex items-center gap-2.5">
+        <span className="flex gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse-slow" />
+          <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse-slow" style={{ animationDelay: "0.2s" }} />
+          <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse-slow" style={{ animationDelay: "0.4s" }} />
         </span>
-      </p>
-      <p className="text-sm text-slate-700 leading-relaxed">{reasoning}</p>
-      {refine && newQueries.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {newQueries.map((q) => (
-            <span key={q} className="text-xs bg-white text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full">
-              → {q}
-            </span>
-          ))}
-        </div>
-      )}
+        <span className="text-sm text-slate-500">{status}</span>
+      </div>
     </div>
   );
 }
 
-function AnswerCard({ answer, trials }: { answer: string; trials: AgentTrial[] }) {
-  return (
-    <div className="rounded-2xl bg-white border-2 border-brand-200 shadow-card-hover p-5 animate-fade-in">
-      <p className="text-xs font-semibold text-brand-600 uppercase tracking-wider mb-2">Answer</p>
-      <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{answer}</p>
-      {trials.length > 0 && (
-        <div className="mt-4 pt-3 border-t border-slate-100 space-y-2">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Cited trials</p>
-          {trials.map((t) => (
-            <a key={t.nct_id} href={t.url} target="_blank" rel="noopener noreferrer"
-              className="block rounded-lg border border-slate-100 hover:border-brand-200 hover:bg-brand-50/40 px-3 py-2 transition-colors">
-              <span className="text-xs font-mono text-slate-400">{t.nct_id}</span>
-              <p className="text-sm text-slate-800 leading-snug">{t.title}</p>
-              {t.conditions.length > 0 && (
-                <p className="text-xs text-slate-400 mt-0.5">{t.conditions.join(" · ")}</p>
-              )}
-            </a>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+// ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AgentPage() {
-  const [question, setQuestion] = useState("");
-  const [items, setItems] = useState<TimelineItem[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Clarifying questions the agent asked, and the user's typed answers
-  const [pendingQuestions, setPendingQuestions] = useState<string[] | null>(null);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [status, setStatus] = useState<string>("Thinking…");
 
-  async function runStream(text: string, clarifications: string) {
-    setError(null);
+  // The question currently being refined. When the agent's last turn asked a
+  // clarifying question, the next user message is treated as clarifying detail
+  // for this question rather than a brand-new search.
+  const activeQuestion = useRef<string | null>(null);
+  const awaitingClarification = useRef<boolean>(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, running, status]);
+
+  async function send(rawText: string) {
+    const text = rawText.trim();
+    if (text.length < 2 || running) return;
+
+    // Decide whether this message refines the previous question or starts anew.
+    const isClarification = awaitingClarification.current && activeQuestion.current !== null;
+    const question = isClarification ? (activeQuestion.current as string) : text;
+    const clarifications = isClarification ? text : "";
+    if (!isClarification) activeQuestion.current = text;
+    awaitingClarification.current = false;
+
+    setMessages((prev) => [...prev, { id: uid(), role: "user", text }]);
+    setInput("");
     setRunning(true);
-    setPendingQuestions(null);
-    setItems([]);
-    let i = 0;
+    setStatus(isClarification ? "Narrowing it down…" : "Thinking…");
+
+    // Boxed so the streaming callback's mutations survive TS closure narrowing.
+    const box: { answered: boolean; clarify: string[] | null } = { answered: false, clarify: null };
+
     try {
       await streamAgentSearch(
-        text,
+        question,
         (event) => {
+          if (event.type === "clarification") {
+            box.clarify = event.questions;
+            return;
+          }
           if (event.type === "error") {
-            setError(event.detail);
+            setMessages((prev) => [
+              ...prev,
+              { id: uid(), role: "agent", kind: "error", text: event.detail },
+            ]);
+            return;
+          }
+          if (event.type === "answer") {
+            box.answered = true;
+            setMessages((prev) => [
+              ...prev,
+              { id: uid(), role: "agent", kind: "answer", text: event.answer, trials: event.trials },
+            ]);
             return;
           }
           if (event.type === "done") return;
-          if (event.type === "clarification") {
-            setPendingQuestions(event.questions);
-            setAnswers({});
-            return;
-          }
-          i += 1;
-          setItems((prev) => [...prev, { event, key: `${event.type}-${i}` }]);
+          const s = statusFor(event);
+          if (s) setStatus(s);
         },
         clarifications,
       );
+
+      // After the answer, if the agent flagged the question as broad, ask a
+      // short clarifying question conversationally and wait for the reply.
+      if (box.clarify && box.clarify.length > 0 && !isClarification) {
+        awaitingClarification.current = true;
+        const questions = box.clarify;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: uid(),
+            role: "agent",
+            kind: "clarify",
+            text: box.answered
+              ? "I found some trials above. To narrow them down to the best matches, could you tell me a bit more?"
+              : "Could you tell me a bit more so I can find the best-matched trials?",
+            questions,
+          },
+        ]);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent search failed");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          role: "agent",
+          kind: "error",
+          text: err instanceof Error ? err.message : "Agent search failed",
+        },
+      ]);
     } finally {
       setRunning(false);
     }
   }
 
-  async function handleAsk(q?: string) {
-    const text = (q ?? question).trim();
-    if (text.length < 3 || running) return;
-    if (q) setQuestion(q);
-    await runStream(text, "");
+  function resetChat() {
+    setMessages([]);
+    activeQuestion.current = null;
+    awaitingClarification.current = false;
   }
 
-  async function handleSubmitClarifications() {
-    if (!pendingQuestions || running) return;
-    // Fold the Q/A pairs into a single clarifications string
-    const clarifications = pendingQuestions
-      .map((q, idx) => (answers[idx]?.trim() ? `${q} ${answers[idx].trim()}` : ""))
-      .filter(Boolean)
-      .join(" | ");
-    if (!clarifications) return;
-    await runStream(question.trim(), clarifications);
-  }
+  const empty = messages.length === 0;
 
   return (
-    <div className="animate-fade-in space-y-4">
-      <div>
-        <h2 className="text-lg font-bold text-slate-900">Agentic Trial Research</h2>
-        <p className="text-xs text-slate-500 mt-0.5">
-          A LangGraph agent decomposes your question, searches the trial database in
-          multiple directions, and refines until it can answer — watch it work below.
-        </p>
-      </div>
-
-      {/* Question input */}
-      <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-4">
-        <textarea
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          rows={2}
-          placeholder="Ask a research question about clinical trials…"
-          className="w-full text-sm text-slate-800 placeholder-slate-400 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:bg-white focus:border-transparent resize-none transition-all"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAsk();
-          }}
-        />
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-slate-400 mr-0.5">Try:</span>
-          {EXAMPLE_QUESTIONS.map((q) => (
-            <button key={q} type="button" onClick={() => handleAsk(q)} disabled={running}
-              className="text-xs bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-700 border border-slate-200 hover:border-brand-200 px-2.5 py-1 rounded-full transition-colors text-left disabled:opacity-50">
-              {q.length > 52 ? q.slice(0, 49) + "…" : q}
-            </button>
-          ))}
+    <div className="animate-fade-in flex flex-col h-[calc(100vh-13rem)] min-h-[28rem]">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Trial Research Assistant</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Describe symptoms, ask as a clinician, or explore programs as an investor — the
+            agent searches 62,000+ trials and refines with you.
+          </p>
+        </div>
+        {!empty && (
           <button
-            onClick={() => handleAsk()}
-            disabled={running || question.trim().length < 3}
-            className="ml-auto inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
+            onClick={resetChat}
+            disabled={running}
+            className="text-xs text-slate-500 hover:text-slate-800 border border-slate-200 hover:border-slate-300 rounded-full px-3 py-1 transition-colors disabled:opacity-40"
           >
-            {running ? (
-              <>
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Thinking…
-              </>
-            ) : (
-              "Ask agent"
-            )}
+            New chat
           </button>
-        </div>
+        )}
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 text-sm text-rose-700">
-          {error}
-        </div>
-      )}
-
-      {/* Streaming timeline */}
-      <div className="space-y-3">
-        {items.map(({ event, key }) => {
-          switch (event.type) {
-            case "sub_questions":
-              return <SubQuestionsCard key={key} subs={event.sub_questions} />;
-            case "retrieval":
-              return <RetrievalCard key={key} round={event.round} results={event.results} total={event.total_unique} />;
-            case "analysis":
-              return <AnalysisCard key={key} iteration={event.iteration} decision={event.decision}
-                reasoning={event.reasoning} newQueries={event.new_queries} />;
-            case "answer":
-              return <AnswerCard key={key} answer={event.answer} trials={event.trials} />;
-            default:
-              return null;
-          }
-        })}
-        {/* Optional refinement — search already ran; these narrow the match */}
-        {pendingQuestions && !running && (
-          <div className="rounded-2xl bg-white border border-amber-200 shadow-card p-5 animate-fade-in">
-            <div className="flex items-center gap-2 mb-1">
-              <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <p className="text-sm font-semibold text-slate-800">
-                Want better matches? Add a few details (optional)
-              </p>
+      {/* ── Message stream ────────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto scrollbar-thin bg-slate-50/60 border border-slate-100 rounded-2xl p-4 space-y-4">
+        {empty && (
+          <div className="h-full flex flex-col items-center justify-center text-center px-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white font-bold mb-3">
+              AI
             </div>
-            <p className="text-xs text-slate-500 mb-3">
-              Results above are based on your original question. Answer any of these to refine.
+            <p className="text-slate-600 font-medium">Ask about clinical trials in plain language</p>
+            <p className="text-sm text-slate-400 mt-1 max-w-sm">
+              I'll search across recruiting trials and ask a follow-up or two to narrow things down.
             </p>
-            <div className="space-y-3">
-              {pendingQuestions.map((q, idx) => (
-                <div key={idx}>
-                  <label className="block text-sm text-slate-600 mb-1">{q}</label>
-                  <input
-                    type="text"
-                    value={answers[idx] ?? ""}
-                    onChange={(e) => setAnswers((a) => ({ ...a, [idx]: e.target.value }))}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleSubmitClarifications(); }}
-                    placeholder="Your answer…"
-                    className="w-full text-sm text-slate-800 placeholder-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:bg-white focus:border-transparent transition-all"
-                  />
-                </div>
+            <div className="mt-5 flex flex-wrap justify-center gap-2 max-w-lg">
+              {EXAMPLE_PROMPTS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => send(p)}
+                  className="text-xs bg-white hover:bg-brand-50 text-slate-600 hover:text-brand-700 border border-slate-200 hover:border-brand-200 px-3 py-1.5 rounded-full transition-colors"
+                >
+                  {p}
+                </button>
               ))}
             </div>
-            <div className="mt-4">
-              <button
-                onClick={handleSubmitClarifications}
-                disabled={!Object.values(answers).some((a) => a.trim())}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
-              >
-                Refine search
-              </button>
-            </div>
           </div>
         )}
 
-        {running && (
-          <div className="flex items-center gap-2 text-sm text-slate-400 px-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse-slow" />
-            agent working…
-          </div>
-        )}
+        {messages.map((m) => (
+          <Bubble key={m.id} msg={m} />
+        ))}
+        {running && <WorkingBubble status={status} />}
+        <div ref={scrollRef} />
       </div>
+
+      {/* ── Composer ──────────────────────────────────────────────────────── */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+        className="mt-3 flex items-end gap-2"
+      >
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          rows={1}
+          placeholder={
+            awaitingClarification.current
+              ? "Answer to narrow it down, or ask something new…"
+              : "Message the trial assistant…"
+          }
+          className="flex-1 resize-none text-sm text-slate-800 placeholder-slate-400 bg-white border border-slate-200 rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all max-h-32"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send(input);
+            }
+          }}
+        />
+        <button
+          type="submit"
+          disabled={running || input.trim().length < 2}
+          className="shrink-0 inline-flex items-center justify-center w-11 h-11 bg-brand-600 text-white rounded-2xl hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-sm shadow-brand-600/30"
+          aria-label="Send"
+        >
+          {running ? (
+            <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
+          )}
+        </button>
+      </form>
     </div>
   );
 }
