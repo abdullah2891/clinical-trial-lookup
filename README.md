@@ -192,10 +192,14 @@ clinical-trial-search/
 │   └── cache.py                  # Redis response cache
 │
 ├── eval/
-│   ├── harness.py                # LangSmith eval harness
-│   └── golden_set.jsonl          # Adversarial test cases
+│   ├── harness.py                # LangSmith eval harness (screener)
+│   ├── agent_harness.py          # LangSmith eval harness (agentic RAG)
+│   ├── build_agent_golden_set.py # Generator for the 100-question agent set
+│   ├── ground_agent_golden_set.py# Re-verify NCT grounding vs pgvector
+│   ├── agent_golden_set.jsonl    # 100 grounded agent Q&A (patient/clinician/investor + adversarial)
+│   └── golden_set.jsonl          # Screener eligibility test cases
 │
-├── frontend/                     # React search UI
+├── frontend/                     # React chat UI (conversational agent)
 ├── finetune_data/
 │   ├── train.jsonl               # 204 training examples
 │   └── val.jsonl                 # 36 validation examples
